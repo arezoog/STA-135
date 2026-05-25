@@ -1,0 +1,499 @@
+---
+title: "Project2"
+author: "Arezoo G"
+date: "2026-05-25"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+---
+title: "Project II: Multiple Regression Modeling"
+subtitle: "King County House Sales"
+author: "Your Name(s)"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    fig_caption: true
+  geometry: margin=1in
+  fontsize: 11pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 6.8,
+  fig.height = 4.8,
+  out.width = "85%"
+)
+
+required_packages <- c(
+  "readr", "ggplot2", "broom", "lmtest",
+  "knitr", "dplyr", "geosphere"
+)
+missing_packages <- required_packages[
+  !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+#install.packages("sp")
+#install.packages("geosphere")  # if you haven’t already
+
+library(readr)
+library(ggplot2)
+library(broom)
+library(lmtest)
+library(knitr)
+library(dplyr)
+library(geosphere)
+
+format_p <- function(p) {
+  ifelse(
+    is.na(p), NA_character_,
+    ifelse(p < 0.001, "<0.001", sprintf("%.4f", p))
+  )
+}
+
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5),
+      legend.position = "bottom",
+      panel.grid.minor = element_blank()
+    )
+)
+```
+
+# Summary of Data
+
+```{r load-data}
+house_df <- read_csv(
+  "/Users/arezoog/Desktop/Spring 2026/STA135/Data/kc_house_data.csv"
+)
+```
+
+```{r data-summary-table}
+summary_vars <- c(
+  "price", "bedrooms", "bathrooms", "sqft_living",
+  "sqft_lot", "floors", "waterfront", "view",
+  "condition", "grade", "yr_built", "yr_renovated"
+)
+
+summary_df <- data.frame(
+  Variable = summary_vars,
+  Mean = sapply(house_df[, summary_vars], mean, na.rm = TRUE),
+  SD = sapply(house_df[, summary_vars], sd, na.rm = TRUE),
+  Minimum = sapply(house_df[, summary_vars], min, na.rm = TRUE),
+  Maximum = sapply(house_df[, summary_vars], max, na.rm = TRUE)
+)
+
+summary_df[, -1] <- round(summary_df[, -1], 2)
+
+kable(
+  summary_df,
+  caption = "Summary statistics for the key variables in the King County dataset",
+  row.names = FALSE
+)
+```
+
+# Explanatory Plot
+
+```{r price-histogram, fig.cap="Distribution of home sale prices in King County (May 2014 -- May 2015)"}
+ggplot(house_df, aes(x = price)) +
+  geom_histogram(bins = 60, fill = "#1B4F72", color = "white", alpha = 0.85) +
+  scale_x_continuous(
+    labels = scales::label_dollar(scale = 1e-6, suffix = "M")
+  ) +
+  labs(
+    title = "House Price Distribution",
+    subtitle = "Prices are strongly right-skewed",
+    x = "Sale price",
+    y = "Count"
+  )
+```
+
+
+
+```{r bathroom-boxplot, fig.cap="Sale price by number of bathrooms"}
+bath_df <- house_df %>%
+  mutate(bathrooms_f = factor(round(bathrooms * 2) / 2))
+
+ggplot(bath_df, aes(x = bathrooms_f, y = price)) +
+  geom_boxplot(fill = "#1B4F72", alpha = 0.7, outlier.size = 0.6) +
+  scale_y_continuous(
+    labels = scales::label_dollar(scale = 1e-6, suffix = "M")
+  ) +
+  labs(
+    title = "House Price versus Bathroom Count",
+    x = "Number of bathrooms",
+    y = "Sale price"
+  )
+```
+
+```{r sqft-lot-scatter, fig.cap="Sale price versus total lot square footage"}
+ggplot(house_df, aes(x = sqft_lot, y = price)) +
+  geom_point(size = 0.8, alpha = 0.3, color = "#1B4F72") +
+  scale_x_continuous(labels = scales::label_comma()) +
+  scale_y_continuous(
+    labels = scales::label_dollar(scale = 1e-6, suffix = "M")
+  ) +
+  labs(
+    title = "Price vs. Total Lot Square Footage",
+    subtitle = "No clear linear relationship; lot size is heavily right-skewed",
+    x = "Lot square footage",
+    y = "Sale price"
+  )
+```
+
+```{r grade-boxplot, fig.cap="Sale price by construction grade"}
+ggplot(house_df, aes(x = factor(grade), y = price)) +
+  geom_boxplot(fill = "#1B4F72", alpha = 0.7, outlier.size = 0.6) +
+  scale_y_continuous(
+    labels = scales::label_dollar(scale = 1e-6, suffix = "M")
+  ) +
+  labs(
+    title = "House Price versus Construction Grade",
+    subtitle = "Price increases with grade; relationship is non-linear",
+    x = "Grade",
+    y = "Sale price"
+  )
+```
+
+```{r waterfront-view-scatter, fig.cap="Sale price versus view score, colored by waterfront status"}
+wf_df <- house_df %>%
+  mutate(
+    Waterfront = ifelse(
+      !is.na(waterfront) & waterfront == 1,
+      "Waterfront",
+      "Non-Waterfront"
+    )
+  )
+
+ggplot(wf_df, aes(x = view, y = price, color = Waterfront)) +
+  geom_jitter(size = 1.0, alpha = 0.5, width = 0.15) +
+  scale_color_manual(
+    values = c("Non-Waterfront" = "#555555", "Waterfront" = "#1B4F72")
+  ) +
+  scale_y_continuous(
+    labels = scales::label_dollar(scale = 1e-6, suffix = "M")
+  ) +
+  labs(
+    title = "View Score vs. Price by Waterfront Status",
+    subtitle = "Waterfront homes command higher prices at every view level",
+    x = "View score",
+    y = "Sale price",
+    color = NULL
+  )
+```
+
+```{r sqft-living-scatter, fig.cap="Sale price versus interior living square footage"}
+ggplot(house_df, aes(x = sqft_living, y = price)) +
+  geom_point(size = 0.8, alpha = 0.3, color = "#1B4F72") +
+  scale_x_continuous(labels = scales::label_comma()) +
+  scale_y_continuous(
+    labels = scales::label_dollar(scale = 1e-6, suffix = "M")
+  ) +
+  labs(
+    title = "Price vs. Living Square Footage",
+    subtitle = "Clear positive association; spread increases above 5,000 sq ft",
+    x = "Living square footage",
+    y = "Sale price"
+  )
+```
+
+
+# Data Cleaning and Distance Feature
+
+```{r data-cleaning-and-distance}
+df <- as.data.frame(house_df)
+
+df$sqft_basement <- suppressWarnings(as.numeric(as.character(df$sqft_basement)))
+df$sqft_basement[is.na(df$sqft_basement)] <- 0
+
+df$yr_renovated[is.na(df$yr_renovated)] <- 0
+df$waterfront[is.na(df$waterfront)] <- 0
+
+df <- df[!is.na(df$view), ]
+
+house_coords <- cbind(df$long, df$lat)
+downtown_coord <- c(-122.334862, 47.604942)
+
+df$ft_to_downtown <- distHaversine(house_coords, downtown_coord) * 3.28084
+
+drop_cols <- c("id", "date", "sqft_living15", "sqft_lot15", "zipcode", "lat", "long")
+house_df_clean <- df[, !(colnames(df) %in% drop_cols)]
+```
+
+
+# Model Fitting
+
+```{r full-and-final-models}
+# Full model
+full_model <- lm(
+  price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors +
+    waterfront + view + condition + grade + sqft_above +
+    sqft_basement + yr_built + yr_renovated + ft_to_downtown,
+  data = house_df_clean
+)
+
+# Remove identified outliers by index (from diagnostics)
+outlier_rows <- c(15468, 3833, 7082)
+house_df_final <- house_df_clean[-outlier_rows, ]
+
+# Final selected model (no sqft_above, sqft_basement, distance)
+final_model <- lm(
+  price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors +
+    waterfront + view + condition + grade + yr_built + yr_renovated,
+  data = house_df_final
+)
+```
+
+```{r model-fit-values}
+model_summary <- summary(final_model)
+final_tidy <- tidy(final_model, conf.int = TRUE)
+final_glance <- glance(final_model)
+
+r_sq <- final_glance$r.squared
+adj_r <- final_glance$adj.r.squared
+f_stat <- final_glance$statistic
+f_df1 <- final_glance$df
+f_df2 <- final_glance$df.residual
+```
+
+
+# Analysis
+
+
+```{r coef-table}
+coef_table <- final_tidy[, c(
+  "term", "estimate", "std.error",
+  "statistic", "p.value", "conf.low", "conf.high"
+)]
+names(coef_table) <- c(
+  "Term", "Estimate", "Std. Error",
+  "t statistic", "p-value", "95% CI lower", "95% CI upper"
+)
+
+coef_table[, c(
+  "Estimate", "Std. Error", "t statistic",
+  "95% CI lower", "95% CI upper"
+)] <- round(
+  coef_table[, c(
+    "Estimate", "Std. Error", "t statistic",
+    "95% CI lower", "95% CI upper"
+  )],
+  2
+)
+
+coef_table$`p-value` <- format_p(as.numeric(final_tidy$p.value))
+
+kable(
+  coef_table,
+  caption = "Estimated coefficients for the final model",
+  align = c("l", rep("r", 6))
+)
+```
+
+```{r living-vs-lot}
+model_living <- lm(
+  price ~ bedrooms + bathrooms + sqft_living + floors +
+    waterfront + view + condition + grade + yr_built + yr_renovated,
+  data = house_df_final
+)
+
+model_lot <- lm(
+  price ~ bedrooms + bathrooms + sqft_lot + floors +
+    waterfront + view + condition + grade + yr_built + yr_renovated,
+  data = house_df_final
+)
+
+adj_r2_living <- round(summary(model_living)$adj.r.squared, 4)
+adj_r2_lot <- round(summary(model_lot)$adj.r.squared, 4)
+
+t_living <- round(coef(model_summary)["sqft_living", "t value"], 2)
+t_lot <- round(coef(model_summary)["sqft_lot", "t value"], 2)
+```
+
+```{r grade-partial-f}
+model_no_grade <- lm(
+  price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors +
+    waterfront + view + condition + yr_built + yr_renovated,
+  data = house_df_final
+)
+
+pf_grade <- anova(model_no_grade, final_model)
+grade_f <- round(pf_grade[2, "F"], 2)
+grade_df1 <- pf_grade[2, "Df"]
+grade_df2 <- pf_grade[2, "Res.Df"]
+grade_p_fmt <- format_p(pf_grade[2, "Pr(>F)"])
+
+kable(
+  pf_grade, digits = 4,
+  caption = "Partial F-test: reduced model without grade versus full model"
+)
+```
+
+```{r interaction-test}
+model_interaction <- lm(
+  price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors +
+    waterfront * view + condition + grade + yr_built + yr_renovated,
+  data = house_df_final
+)
+
+pf_interact <- anova(final_model, model_interaction)
+int_f <- round(pf_interact[2, "F"], 2)
+int_df1 <- pf_interact[2, "Df"]
+int_df2 <- pf_interact[2, "Res.Df"]
+int_p_fmt <- format_p(pf_interact[2, "Pr(>F)"])
+
+interact_ci <- confint(model_interaction)["waterfront:view", ]
+int_est <- round(
+  coef(summary(model_interaction))["waterfront:view", "Estimate"],
+  2
+)
+int_ci_lo <- round(interact_ci, 2)[1]
+int_ci_hi <- round(interact_ci, 2)[2]
+
+kable(
+  pf_interact, digits = 4,
+  caption = "Partial F-test: additive versus waterfront x view interaction model"
+)
+```
+
+
+# Diagnostics
+
+```{r diagnostics}
+diag_data <- augment(final_model)
+diag_data$sqrt_abs_std_resid <- sqrt(abs(diag_data$.std.resid))
+diag_data$index <- seq_len(nrow(diag_data))
+
+leverage_cutoff <- 2 * length(coef(final_model)) / nrow(diag_data)
+cook_cutoff <- 4 / nrow(diag_data)
+top_influence <- diag_data[
+  order(diag_data$.cooksd, decreasing = TRUE)[1:3],
+]
+```
+
+```{r diag-plots, fig.height=6, fig.width=8}
+plot_2x2 <- function(p1, p2, p3, p4) {
+  grid::grid.newpage()
+  grid::pushViewport(grid::viewport(layout = grid::grid.layout(2, 2)))
+  print(p1, vp = grid::viewport(layout.pos.row = 1, layout.pos.col = 1))
+  print(p2, vp = grid::viewport(layout.pos.row = 1, layout.pos.col = 2))
+  print(p3, vp = grid::viewport(layout.pos.row = 2, layout.pos.col = 1))
+  print(p4, vp = grid::viewport(layout.pos.row = 2, layout.pos.col = 2))
+}
+
+p_resid_fit <- ggplot(diag_data, aes(x = .fitted, y = .resid)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey45") +
+  geom_point(size = 1.7, alpha = 0.8, color = "#1B4F72") +
+  geom_smooth(
+    method = "loess", formula = y ~ x,
+    se = FALSE, color = "#D55E00", linewidth = 0.8
+  ) +
+  labs(title = "Residuals vs Fitted", x = "Fitted values", y = "Residuals")
+
+p_qq <- ggplot(diag_data, aes(sample = .std.resid)) +
+  stat_qq(size = 1.7, alpha = 0.8, color = "#1B4F72") +
+  stat_qq_line(color = "#D55E00", linewidth = 0.8) +
+  labs(
+    title = "Normal Q-Q",
+    x = "Theoretical quantiles", y = "Standardized residuals"
+  )
+
+p_scale <- ggplot(diag_data, aes(x = .fitted, y = sqrt_abs_std_resid)) +
+  geom_point(size = 1.7, alpha = 0.8, color = "#1B4F72") +
+  geom_smooth(
+    method = "loess", formula = y ~ x,
+    se = FALSE, color = "#D55E00", linewidth = 0.8
+  ) +
+  labs(
+    title = "Scale-Location", x = "Fitted values",
+    y = expression(sqrt(abs("standardized residual")))
+  )
+
+p_leverage <- ggplot(diag_data, aes(x = .hat, y = .std.resid)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey45") +
+  geom_hline(yintercept = c(-2, 2), linetype = "dotted", color = "grey60") +
+  geom_vline(xintercept = leverage_cutoff, linetype = "dashed", color = "grey45") +
+  geom_point(size = 1.8, alpha = 0.85, color = "#1B4F72") +
+  geom_text(
+    data = top_influence, aes(label = index),
+    nudge_y = 0.25, size = 2.8, show.legend = FALSE
+  ) +
+  labs(
+    title = "Residuals vs Leverage",
+    x = "Leverage", y = "Standardized residuals"
+  )
+
+plot_2x2(p_resid_fit, p_qq, p_scale, p_leverage)
+```
+
+```{r cooks-distance-plot}
+ggplot(diag_data, aes(x = index, y = .cooksd)) +
+  geom_segment(
+    aes(xend = index, y = 0, yend = .cooksd),
+    linewidth = 0.35, alpha = 0.75, color = "#1B4F72"
+  ) +
+  geom_point(size = 1.9, alpha = 0.9, color = "#1B4F72") +
+  geom_hline(
+    yintercept = cook_cutoff, linetype = "dashed",
+    color = "#C0392B", linewidth = 0.7
+  ) +
+  geom_text(
+    data = top_influence, aes(label = index),
+    nudge_y = 0.015, size = 2.8, show.legend = FALSE
+  ) +
+  labs(
+    title = "Cook's Distance",
+    subtitle = "Dashed line marks the 4/n screening rule",
+    x = "Observation",
+    y = "Cook's distance"
+  )
+```
+
+```{r assumption-tests}
+set.seed(123)
+
+shapiro_result <- shapiro.test(sample(residuals(final_model), 5000))
+bp_result <- lmtest::bptest(final_model)
+bp_stat <- as.numeric(bp_result$statistic)
+bp_p <- bp_result$p.value
+
+dw_result <- lmtest::dwtest(final_model)
+dw_stat <- as.numeric(dw_result$statistic)
+dw_p <- dw_result$p.value
+
+diagnostic_table <- data.frame(
+  Assumption = c("Normality", "Constant Variance", "Independence"),
+  Test = c("Shapiro-Wilk", "Breusch-Pagan", "Durbin-Watson"),
+  Statistic = round(c(
+    as.numeric(shapiro_result$statistic),
+    bp_stat,
+    dw_stat
+  ), 4),
+  `p-value` = c(
+    shapiro_result$p.value,
+    bp_p,
+    dw_p
+  ),
+  check.names = FALSE
+)
+
+kable(diagnostic_table, caption = "Formal Assumption Tests")
+```
+
+
+
+
+
+
+
+
+
